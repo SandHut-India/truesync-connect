@@ -1,0 +1,33 @@
+name: Build connector
+
+on:
+  push:
+    paths:
+      - "**"
+  pull_request:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: Publish Windows x64
+        run: dotnet publish TrueSync.Connector -c Release -r win-x64 --self-contained true -o dist/win-x64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: dist/win-x64
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build universal app
+        run: bash scripts/build-macos.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: dist/TrueSync-Connector-Mac.dmg

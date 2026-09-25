@@ -1,0 +1,17 @@
+# Ignore build output and local secrets
+dist/
+**/bin/
+**/obj/
+*.user
+*.suo
+.DS_Store
+*.dmg
+*.exe
+config.local.json
+.env
+.env.*
+*.p12
+*.pfx
+*.cer
+*.key
+*.pem

@@ -1,0 +1,166 @@
+name: Release
+
+# Build tagged releases (v*), optionally SignPath-sign Windows, optionally
+# Developer ID–sign + notarize macOS, then publish a GitHub Release.
+# Secrets are never required for an unsigned build; Gatekeeper / SmartScreen
+# warnings apply until certificates are configured. See CODE_SIGNING.md.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Install NSIS
+        run: choco install nsis -y --no-progress
+
+      - name: Build Windows installer
+        shell: bash
+        run: |
+          export PATH="/c/Program Files (x86)/NSIS:/c/Program Files/NSIS:$PATH"
+          bash scripts/build-windows.sh
+
+      - name: Upload unsigned installer
+        id: upload-unsigned
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer-unsigned
+          path: dist/TrueSync-Connector-Windows.exe
+          if-no-files-found: error
+
+      - name: Submit to SignPath (optional)
+        id: signpath
+        if: ${{ secrets.SIGNPATH_API_TOKEN != '' && vars.SIGNPATH_ORGANIZATION_ID != '' }}
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: truesync-connect
+          signing-policy-slug: release-signing
+          github-artifact-id: ${{ steps.upload-unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: dist/signed
+
+      - name: Stage Windows release asset
+        shell: bash
+        run: |
+          mkdir -p dist/release
+          if [[ -f dist/signed/TrueSync-Connector-Windows.exe ]]; then
+            cp dist/signed/TrueSync-Connector-Windows.exe dist/release/
+            echo "Using SignPath-signed installer"
+          else
+            cp dist/TrueSync-Connector-Windows.exe dist/release/
+            echo "::warning::SignPath secrets/vars missing or signing skipped — Windows installer is UNSIGNED. SmartScreen Unknown publisher warning expected. Apply at https://signpath.org/apply.html — see CODE_SIGNING.md"
+          fi
+
+      - name: Upload Windows release asset
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          path: dist/release/TrueSync-Connector-Windows.exe
+          if-no-files-found: error
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Import Developer ID certificate (optional)
+        id: import-cert
+        if: ${{ secrets.MAC_CERTIFICATE_P12_BASE64 != '' && secrets.MAC_CERTIFICATE_PASSWORD != '' }}
+        env:
+          MAC_CERTIFICATE_P12_BASE64: ${{ secrets.MAC_CERTIFICATE_P12_BASE64 }}
+          MAC_CERTIFICATE_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.MAC_KEYCHAIN_PASSWORD }}
+        run: |
+          KEYCHAIN_PASSWORD="${KEYCHAIN_PASSWORD:-truesync-ci-temp}"
+          CERT_PATH="$RUNNER_TEMP/developer-id.p12"
+          KEYCHAIN="$RUNNER_TEMP/truesync-signing.keychain-db"
+          echo "$MAC_CERTIFICATE_P12_BASE64" | base64 --decode > "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$CERT_PATH" -P "$MAC_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security list-keychain -d user -s "$KEYCHAIN" $(security list-keychain -d user | sed 's/"//g')
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          rm -f "$CERT_PATH"
+          echo "imported=true" >> "$GITHUB_OUTPUT"
+
+      - name: Build macOS DMG
+        env:
+          MAC_SIGN_IDENTITY: ${{ secrets.MAC_SIGN_IDENTITY }}
+          NOTARY_PROFILE: ${{ secrets.NOTARY_PROFILE }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          if [[ -z "${MAC_SIGN_IDENTITY:-}" ]]; then
+            echo "::warning::MAC_SIGN_IDENTITY unset — ad-hoc codesign only. Gatekeeper will block. See CODE_SIGNING.md (Apple Developer Program ~\$99/yr)."
+          fi
+          bash scripts/build-macos.sh
+
+      - name: Upload macOS DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-release
+          path: dist/TrueSync-Connector-Mac.dmg
+          if-no-files-found: error
+
+  release:
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: "*-release"
+          merge-multiple: false
+
+      - name: Prepare assets
+        run: |
+          mkdir -p release-assets
+          find artifacts -type f \( -name '*.exe' -o -name '*.dmg' \) -exec cp {} release-assets/ \;
+          ls -la release-assets
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          cat > /tmp/release-notes.md <<EOF
+          ## TrueSync Connector ${TAG}
+
+          Open-source desktop connector for [TrueSync](https://truesync-2026.web.app/).
+
+          | Asset | Notes |
+          |---|---|
+          | \`TrueSync-Connector-Windows.exe\` | NSIS installer (x64). Signed via SignPath when configured; otherwise unsigned — SmartScreen may warn. |
+          | \`TrueSync-Connector-Mac.dmg\` | Universal macOS 13+. Developer ID + notarized when secrets are present; otherwise ad-hoc — Gatekeeper may block. |
+
+          ### Code signing policy
+
+          Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
+
+          See [CODE_SIGNING.md](https://github.com/SandHut-India/truesync-connect/blob/main/CODE_SIGNING.md) for status and how to verify.
+          EOF
+          # Strip leading spaces introduced by YAML block indent
+          sed -i 's/^          //' /tmp/release-notes.md
+          gh release create "$TAG" release-assets/* \
+            --title "TrueSync Connector ${TAG}" \
+            --notes-file /tmp/release-notes.md

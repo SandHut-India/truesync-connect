@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SignPath artifact configuration for GitHub Actions upload-artifact (ZIP wrapper).
+  Project slug: truesync-connect
+  Signing policy: release-signing
+
+  Uploaded path: TrueSync-Connector-Windows.exe (NSIS installer).
+  SignPath Authenticode-signs the PE; nested publish contents are not re-signed here.
+-->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <zip-file>
+    <pe-file path="TrueSync-Connector-Windows.exe">
+      <authenticode-sign />
+    </pe-file>
+  </zip-file>
+</artifact-configuration>
