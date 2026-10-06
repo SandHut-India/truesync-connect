@@ -32,7 +32,7 @@ class ConnectorForm : Form
     static readonly string Folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TrueSyncConnector");
     static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     static readonly string ApiBase = Config.ApiBase();
-    static readonly string Site = Config.SiteUrl(ApiBase);
+    static readonly string WebsiteUrl = Config.SiteUrl(ApiBase);
     readonly HttpClient http = new() { BaseAddress = new Uri(ApiBase), Timeout = TimeSpan.FromSeconds(110) };
     readonly Label status = new() { AutoSize = false, Width = 490, Height = 125, Text = "Connecting…", Font = new Font("Segoe UI", 12) };
     readonly TextBox code = new() { ReadOnly = true, Width = 360, Font = new Font("Segoe UI", 24, FontStyle.Bold) };
@@ -50,14 +50,26 @@ class ConnectorForm : Form
         layout.Controls.Add(status);
         layout.Controls.Add(code);
         var site = new Button { Text = "Open TrueSync → Printers", AutoSize = true };
-        site.Click += (_, _) => System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Site) { UseShellExecute = true });
+        site.Click += (_, _) => System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(WebsiteUrl) { UseShellExecute = true });
         layout.Controls.Add(site);
         var startup = new CheckBox { Text = "Open automatically when I sign in to Windows", AutoSize = true };
-        using (var run = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run"))
+        var syncingStartup = true;
+        Load += async (_, _) => { try { startup.Checked = await Startup.IsEnabled(); } catch { startup.Enabled = false; } finally { syncingStartup = false; } };
+        startup.CheckedChanged += async (_, _) =>
         {
-            startup.Checked = run?.GetValue("TrueSyncConnector") != null;
-        }
-        startup.CheckedChanged += (_, _) => { using var run = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run"); if (startup.Checked) run.SetValue("TrueSyncConnector", "\"" + Environment.ProcessPath + "\""); else run.DeleteValue("TrueSyncConnector", false); };
+            if (syncingStartup) return;
+            syncingStartup = true;
+            try
+            {
+                var wanted = startup.Checked;
+                var actual = await Startup.Set(wanted);
+                startup.Checked = actual;
+                if (wanted && !actual)
+                    MessageBox.Show("Windows blocked opening at sign-in. Turn it on in Settings → Apps → Startup.", "TrueSync Connector");
+            }
+            catch { startup.Checked = !startup.Checked; }
+            finally { syncingStartup = false; }
+        };
         layout.Controls.Add(startup);
         var forget = new Button { Text = "Disconnect this computer", AutoSize = true };
         forget.Click += (_, _) => { if (MessageBox.Show("Stop receiving jobs? Remove this computer in TrueSync → Printers too.", "Disconnect", MessageBoxButtons.YesNo) == DialogResult.Yes) { File.Delete(Path.Combine(Folder, "pair.bin")); closing = true; Close(); } };

@@ -1,0 +1,20 @@
+name: Build MSIX (Microsoft Store)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  msix:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: Build MSIX
+        shell: pwsh
+        run: ./scripts/build-msix.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: msix
+          path: dist/TrueSync-Connector.msix

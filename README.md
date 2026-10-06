@@ -53,6 +53,15 @@ export WINDOWS_CERT_PASSWORD='…'   # never commit
 ./scripts/build-windows.sh
 ```
 
+Microsoft Store package (MSIX, signed by the Store on publish). Fill `windows/msix/identity.json` from Partner Center → Product identity, then on Windows with the Windows SDK:
+
+```powershell
+./scripts/build-msix.ps1
+# → dist/TrueSync-Connector.msix
+```
+
+Or run the **Build MSIX (Microsoft Store)** workflow in GitHub Actions and download the `msix` artifact.
+
 ### macOS
 
 ```bash
