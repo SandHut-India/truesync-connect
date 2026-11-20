@@ -8,7 +8,7 @@ RequestExecutionLevel user
 SetCompressor /SOLID lzma
 Icon "../TrueSync.Connector/TrueSync.ico"
 UninstallIcon "../TrueSync.Connector/TrueSync.ico"
-!define VERSION "0.1.4"
+!define VERSION "0.1.5"
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\TrueSyncConnector"
 VIProductVersion "${VERSION}.0"
 VIAddVersionKey "ProductName" "TrueSync Connector"
@@ -52,6 +52,9 @@ FunctionEnd
 Section "Install"
   SetOutPath "$INSTDIR"
   File /r "../dist/win-x64/*"
+  WriteRegStr HKCU "Software\Classes\truesync-connector" "" "URL:TrueSync Connector"
+  WriteRegStr HKCU "Software\Classes\truesync-connector" "URL Protocol" ""
+  WriteRegStr HKCU "Software\Classes\truesync-connector\shell\open\command" "" '$\"$INSTDIR\TrueSync Connector.exe$\"'
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   CreateShortcut "$SMPROGRAMS\TrueSync Connector.lnk" "$INSTDIR\TrueSync Connector.exe"
   CreateShortcut "$DESKTOP\TrueSync Connector.lnk" "$INSTDIR\TrueSync Connector.exe"
@@ -77,6 +80,7 @@ Section "Uninstall"
   Delete "$SMPROGRAMS\TrueSync Connector.lnk"
   Delete "$DESKTOP\TrueSync Connector.lnk"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "TrueSyncConnector"
+  DeleteRegKey HKCU "Software\Classes\truesync-connector"
   DeleteRegKey HKCU "${UNINSTALL_KEY}"
   RMDir /r "$LOCALAPPDATA\TrueSyncConnector"
   MessageBox MB_OK "TrueSync Connector was removed from this computer. Also remove it in TrueSync > Printers to revoke its connection." /SD IDOK

@@ -12,20 +12,30 @@ static class Program
     static void Main()
     {
         ApplicationConfiguration.Initialize();
+        using var showWindow = new EventWaitHandle(false, EventResetMode.AutoReset, "Local\\TrueSyncConnectorShow");
         using var mutex = new Mutex(true, "Local\\TrueSyncConnector", out bool first);
         if (!first)
         {
-            MessageBox.Show("TrueSync Connector is already running. Open it from the system tray.");
+            showWindow.Set();
             return;
         }
-        Application.Run(new ConnectorForm());
+        using var form = new ConnectorForm();
+        using var activation = new System.Windows.Forms.Timer { Interval = 250 };
+        activation.Tick += (_, _) => {
+            if (!showWindow.WaitOne(0)) return;
+            form.Show();
+            form.WindowState = FormWindowState.Normal;
+            form.Activate();
+        };
+        activation.Start();
+        Application.Run(form);
     }
 
 }
 record Pair(string Id, string Secret, string Code, long ExpiresAt);
 record PrintOptions(int Copies, bool Color, bool Duplex, double Width, double Height, string Orientation, bool Fit, double Margin, int Dpi, string Tray);
 record Command(string Id, string JobId, string Printer, PrintOptions Options);
-record Poll(bool Paired, Command? Command);
+record Poll(bool Paired, Command? Command, string? SettingsPrinter);
 record Result(string Id, string ResultValue, string Error);
 class ConnectorForm : Form
 {
@@ -41,17 +51,36 @@ class ConnectorForm : Form
     public ConnectorForm()
     {
         Text = "TrueSync Connector";
-        ClientSize = new Size(550, 415);
+        ClientSize = new Size(640, 650);
+        MinimumSize = new Size(640, 650);
         BackColor = Color.FromArgb(247, 249, 244);
         Font = new Font("Segoe UI", 11);
-        var layout = new FlowLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(24), FlowDirection = FlowDirection.TopDown, WrapContents = false };
+        var layout = new FlowLayoutPanel { AutoScroll = true, Dock = DockStyle.Fill, Padding = new Padding(24), FlowDirection = FlowDirection.TopDown, WrapContents = false };
         Controls.Add(layout);
         layout.Controls.Add(new Label { Text = "TrueSync. Your printer, connected.", AutoSize = true, Font = new Font("Segoe UI", 18, FontStyle.Bold) });
         layout.Controls.Add(status);
         layout.Controls.Add(code);
-        var site = new Button { Text = "Open TrueSync → Printers", AutoSize = true };
-        site.Click += (_, _) => System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(WebsiteUrl) { UseShellExecute = true });
+        var site = new Button { Text = "Open TrueSync website", AutoSize = true };
+        var copy = new Button { Text = "Copy connection code", AutoSize = true, Visible = false };
+        copy.Click += (_, _) => { if (code.Text.Length == 10) { try { Clipboard.SetText(code.Text); copy.Text = "Code copied"; } catch { MessageBox.Show("Select the code and press Ctrl+C to copy it."); } } };
+        code.VisibleChanged += (_, _) => { copy.Visible = code.Visible; copy.Text = "Copy connection code"; };
+        layout.Controls.Add(copy);
+        site.Click += (_, _) => System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(WebsiteUrl + "?connect=1") { UseShellExecute = true });
         layout.Controls.Add(site);
+        var printerChoice = new ComboBox { Width = 560, DropDownStyle = ComboBoxStyle.DropDownList };
+        void RefreshPrinters() { var previous = printerChoice.SelectedItem as string; printerChoice.Items.Clear(); printerChoice.Items.AddRange(GetPrinterNames()); if (previous != null && printerChoice.Items.Contains(previous)) printerChoice.SelectedItem = previous; else if (printerChoice.Items.Count > 0) printerChoice.SelectedIndex = 0; }
+        layout.Controls.Add(new Label { Text = "Your printers", AutoSize = true });
+        layout.Controls.Add(printerChoice);
+        var controls = new FlowLayoutPanel { AutoSize = true, Width = 560 };
+        var refreshPrinters = new Button { Text = "Refresh", AutoSize = true };
+        refreshPrinters.Click += (_, _) => RefreshPrinters(); controls.Controls.Add(refreshPrinters);
+        var settings = new Button { Text = "Printer preferences", AutoSize = true };
+        settings.Click += (_, _) => { if (printerChoice.SelectedItem is string name) OpenPrinterSettings(name); }; controls.Controls.Add(settings);
+        var windows = new Button { Text = "Windows printers & queues", AutoSize = true };
+        windows.Click += (_, _) => { try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("ms-settings:printers") { UseShellExecute = true }); } catch { MessageBox.Show("Open Windows Settings → Bluetooth & devices → Printers & scanners."); } }; controls.Controls.Add(windows);
+        layout.Controls.Add(controls);
+        layout.Controls.Add(new Label { Text = "A Sand-Hut product · sandhut.in", AutoSize = true });
+        RefreshPrinters();
         var startup = new CheckBox { Text = "Open automatically when I sign in to Windows", AutoSize = true };
         var syncingStartup = true;
         Load += async (_, _) => { try { startup.Checked = await Startup.IsEnabled(); } catch { startup.Enabled = false; } finally { syncingStartup = false; } };
@@ -81,6 +110,26 @@ class ConnectorForm : Form
         tray.DoubleClick += (_, _) => { Show(); WindowState = FormWindowState.Normal; };
         FormClosing += (_, e) => { if (!closing && e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; Hide(); } else { stop.Cancel(); tray.Dispose(); } };
         Shown += async (_, _) => { _ = Heartbeat(); await Loop(); };
+    }
+    static void OpenPrinterSettings(string name)
+    {
+        if (!GetPrinterNames().Contains(name)) { MessageBox.Show("This printer is no longer available. Refresh your printers."); return; }
+        try {
+            var start = new System.Diagnostics.ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "rundll32.exe")) { UseShellExecute = false };
+            start.ArgumentList.Add("printui.dll,PrintUIEntry"); start.ArgumentList.Add("/e"); start.ArgumentList.Add("/n"); start.ArgumentList.Add(name);
+            System.Diagnostics.Process.Start(start);
+        } catch { MessageBox.Show("Could not open printer preferences. Use Windows Settings → Printers & scanners."); }
+    }
+    static object[] cachedCapabilities = [];
+    static DateTime capabilitiesUpdated = DateTime.MinValue;
+    static object[] PrinterCapabilities() {
+      if ((DateTime.UtcNow - capabilitiesUpdated).TotalSeconds < 60) return cachedCapabilities;
+      capabilitiesUpdated = DateTime.UtcNow;
+      cachedCapabilities = GetPrinterNames().Select(name => {
+        try { var p = new PrinterSettings { PrinterName = name }; return (object)new { name, color = p.SupportsColor, duplex = p.CanDuplex, trays = p.PaperSources.Cast<PaperSource>().Select(x => x.SourceName).Take(50).ToArray(), papers = p.PaperSizes.Cast<PaperSize>().Select(x => x.PaperName).Take(100).ToArray() }; }
+        catch { return (object)new { name, unavailable = true }; }
+    }).ToArray();
+      return cachedCapabilities;
     }
     async Task Heartbeat()
     {
@@ -208,11 +257,12 @@ class ConnectorForm : Form
                 await FlushResults();
                 var poll = await Call<Poll>("connector/poll", new
                 {
-                    printers
+                    printers, capabilities = PrinterCapabilities(), settingsSupported = true
                 });
+                if (poll.SettingsPrinter is string requested && MessageBox.Show("Open printer preferences for " + requested + "? Requested from your TrueSync workspace.", "TrueSync", MessageBoxButtons.YesNo) == DialogResult.Yes) OpenPrinterSettings(requested);
                 if (!poll.Paired)
                 {
-                    status.Text = "In TrueSync → Printers, enter this code to approve this computer once.";
+                    status.Text = "Copy the code below. Paste it into the TrueSync website and choose Connect my computer.";
                     code.Visible = true;
                 }
                 else

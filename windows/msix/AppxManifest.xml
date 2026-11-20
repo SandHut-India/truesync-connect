@@ -29,6 +29,9 @@
         <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" ShortName="TrueSync" />
       </uap:VisualElements>
       <Extensions>
+        <uap:Extension Category="windows.protocol">
+          <uap:Protocol Name="truesync-connector" />
+        </uap:Extension>
         <desktop:Extension Category="windows.startupTask" Executable="TrueSync Connector.exe" EntryPoint="Windows.FullTrustApplication">
           <desktop:StartupTask TaskId="TrueSyncConnectorStartup" Enabled="false" DisplayName="TrueSync Connector" />
         </desktop:Extension>
