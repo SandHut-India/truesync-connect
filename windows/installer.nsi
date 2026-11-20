@@ -8,7 +8,7 @@ RequestExecutionLevel user
 SetCompressor /SOLID lzma
 Icon "../TrueSync.Connector/TrueSync.ico"
 UninstallIcon "../TrueSync.Connector/TrueSync.ico"
-!define VERSION "0.1.5"
+!define VERSION "0.1.6"
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\TrueSyncConnector"
 VIProductVersion "${VERSION}.0"
 VIAddVersionKey "ProductName" "TrueSync Connector"

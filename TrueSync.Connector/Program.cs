@@ -47,6 +47,7 @@ class ConnectorForm : Form
     readonly Label status = new() { AutoSize = false, Width = 490, Height = 125, Text = "Connecting…", Font = new Font("Segoe UI", 12) };
     readonly TextBox code = new() { ReadOnly = true, Width = 360, Font = new Font("Segoe UI", 24, FontStyle.Bold) };
     readonly NotifyIcon tray = new() { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? SystemIcons.Application, Text = "TrueSync Connector", Visible = true };
+    string lastPrint = "";
     Pair? pair; bool closing; bool printing; readonly CancellationTokenSource stop = new();
     public ConnectorForm()
     {
@@ -71,6 +72,29 @@ class ConnectorForm : Form
         void RefreshPrinters() { var previous = printerChoice.SelectedItem as string; printerChoice.Items.Clear(); printerChoice.Items.AddRange(GetPrinterNames()); if (previous != null && printerChoice.Items.Contains(previous)) printerChoice.SelectedItem = previous; else if (printerChoice.Items.Count > 0) printerChoice.SelectedIndex = 0; }
         layout.Controls.Add(new Label { Text = "Your printers", AutoSize = true });
         layout.Controls.Add(printerChoice);
+        var readiness = new Label { AutoSize = true, MaximumSize = new Size(560, 0), Text = "Choose a printer to check its status." };
+        layout.Controls.Add(readiness);
+        async Task RefreshReadiness()
+        {
+            var name = printerChoice.SelectedItem as string;
+            if (name == null) return;
+            readiness.Text = "Checking Windows printer status…";
+            try
+            {
+                var details = await Task.Run(() =>
+                {
+                    var printer = new PrinterSettings { PrinterName = name };
+                    var paper = printer.DefaultPageSettings.PaperSize;
+                    return $"{PrinterStatus.Read(name)} · Default paper: {paper.PaperName} ({paper.Width * .254:0.#} × {paper.Height * .254:0.#} mm)";
+                });
+                if (!IsDisposed && Equals(printerChoice.SelectedItem, name)) readiness.Text = details;
+            }
+            catch
+            {
+                if (!IsDisposed && Equals(printerChoice.SelectedItem, name)) readiness.Text = "Printer details unavailable. Check Windows printer settings.";
+            }
+        }
+        printerChoice.SelectedIndexChanged += async (_, _) => await RefreshReadiness();
         var controls = new FlowLayoutPanel { AutoSize = true, Width = 560 };
         var refreshPrinters = new Button { Text = "Refresh", AutoSize = true };
         refreshPrinters.Click += (_, _) => RefreshPrinters(); controls.Controls.Add(refreshPrinters);
@@ -126,7 +150,7 @@ class ConnectorForm : Form
       if ((DateTime.UtcNow - capabilitiesUpdated).TotalSeconds < 60) return cachedCapabilities;
       capabilitiesUpdated = DateTime.UtcNow;
       cachedCapabilities = GetPrinterNames().Select(name => {
-        try { var p = new PrinterSettings { PrinterName = name }; return (object)new { name, color = p.SupportsColor, duplex = p.CanDuplex, trays = p.PaperSources.Cast<PaperSource>().Select(x => x.SourceName).Take(50).ToArray(), papers = p.PaperSizes.Cast<PaperSize>().Select(x => x.PaperName).Take(100).ToArray() }; }
+        try { var p = new PrinterSettings { PrinterName = name }; return (object)new { name, color = p.SupportsColor, duplex = p.CanDuplex, status = PrinterStatus.Read(name), defaultPaper = p.DefaultPageSettings.PaperSize.PaperName, trays = p.PaperSources.Cast<PaperSource>().Select(x => x.SourceName).Take(50).ToArray(), papers = p.PaperSizes.Cast<PaperSize>().Select(x => $"{x.PaperName} ({x.Width * .254:0.#} × {x.Height * .254:0.#} mm)").Take(100).ToArray() }; }
         catch { return (object)new { name, unavailable = true }; }
     }).ToArray();
       return cachedCapabilities;
@@ -257,7 +281,7 @@ class ConnectorForm : Form
                 await FlushResults();
                 var poll = await Call<Poll>("connector/poll", new
                 {
-                    printers, capabilities = PrinterCapabilities(), settingsSupported = true
+                    printers, capabilities = await Task.Run(PrinterCapabilities, stop.Token), settingsSupported = true
                 });
                 if (poll.SettingsPrinter is string requested && MessageBox.Show("Open printer preferences for " + requested + "? Requested from your TrueSync workspace.", "TrueSync", MessageBoxButtons.YesNo) == DialogResult.Yes) OpenPrinterSettings(requested);
                 if (!poll.Paired)
@@ -268,7 +292,7 @@ class ConnectorForm : Form
                 else
                 {
                     code.Visible = false;
-                    status.Text = $"Connected · {printers.Length} printer(s)\nKeep this app running while your shop is open.";
+                    status.Text = $"Connected · {printers.Length} printer(s)\n" + (lastPrint.Length > 0 ? lastPrint : "Keep this app running while your shop is open.");
                     if (poll.Command is { } command)
                     {
                         status.Text = "Printing on " + command.Printer + "…";
@@ -307,11 +331,18 @@ class ConnectorForm : Form
         {
             var data = await Call<JsonElement>("connector/file/" + c.Id);
             var bytes = Convert.FromBase64String(data.GetProperty("file").GetString()!);
-            var outcome = await Task.Run(() => PdfPrinter.Print(bytes, c), stop.Token);
-            result = new(c.Id, outcome, "");
-            Array.Clear(bytes);
+            try
+            {
+                var progress = new Progress<string>(detail => status.Text = c.Printer + "\n" + detail);
+                var outcome = await Task.Run(() => PdfPrinter.Print(bytes, c, progress, stop.Token), stop.Token);
+                status.Text = outcome.Detail;
+                result = new(c.Id, outcome.State, outcome.Detail);
+            }
+            finally { Array.Clear(bytes); }
         }
         catch (Exception e) { result = new(c.Id, "failed", "Check the printer and its Windows queue before retrying. " + Describe(e)); }
+        lastPrint = result.Error;
+        status.Text = lastPrint;
         WriteResult(path, result);
         await FlushResults();
     }
